@@ -96,6 +96,27 @@ impl JiraClient {
         resp.json::<Value>().context("Failed to parse Jira response")
     }
 
+    /// Perform an authenticated POST request with a JSON body.
+    fn post(&self, path: &str, body: &Value) -> Result<()> {
+        let resp = self
+            .client
+            .post(self.url(path))
+            .basic_auth(&self.email, Some(&self.api_token))
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .context("Failed to connect to Jira")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            anyhow::bail!("Jira API returned {status}: {body}");
+        }
+
+        Ok(())
+    }
+
     // ── Read operations ──────────────────────────────────────────────
 
     /// Fetch the raw JSON for a single issue.
@@ -179,12 +200,59 @@ impl JiraClient {
         Ok(projects)
     }
 
+    /// Transition an issue to a new status by transition ID.
+    pub fn transition_issue(&self, issue_key: &str, transition_id: &str) -> Result<()> {
+        let body = serde_json::json!({
+            "transition": { "id": transition_id }
+        });
+        self.post(&format!("issue/{issue_key}/transitions"), &body)
+    }
+
+    /// Find the "In Progress" transition for an issue and execute it.
+    /// Returns Ok(true) if transitioned, Ok(false) if already in progress or no transition found.
+    pub fn transition_to_in_progress(&self, issue_key: &str) -> Result<bool> {
+        let summary = self.get_issue_summary(issue_key)?;
+        if summary.status.eq_ignore_ascii_case("In Progress") {
+            return Ok(false);
+        }
+
+        let transitions = self.get_issue_transitions(issue_key)?;
+        let in_progress = transitions.iter().find(|t| {
+            let name = t.name.to_lowercase();
+            name.contains("in progress") || name.contains("start")
+        });
+
+        match in_progress {
+            Some(t) => {
+                self.transition_issue(issue_key, &t.id)?;
+                Ok(true)
+            }
+            None => {
+                let names: Vec<_> = transitions.iter().map(|t| t.name.as_str()).collect();
+                anyhow::bail!(
+                    "No 'In Progress' transition found for {issue_key}. \
+                     Available transitions: {}",
+                    names.join(", ")
+                );
+            }
+        }
+    }
+
     /// Return the authenticated user's profile (useful for testing auth).
     pub fn get_myself(&self) -> Result<UserInfo> {
         let data = self.get("myself", &[])?;
         let user: UserInfo = serde_json::from_value(data)?;
         Ok(user)
     }
+}
+
+/// Extract a repository identifier from labels matching the `repo:owner/name` pattern.
+/// Returns the first match, e.g. `"bradleypaul/my-app"`.
+pub fn repo_from_labels(labels: &[String]) -> Option<String> {
+    labels
+        .iter()
+        .find(|l| l.starts_with("repo:"))
+        .map(|l| l.trim_start_matches("repo:").to_string())
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

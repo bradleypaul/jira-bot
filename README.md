@@ -55,7 +55,32 @@ jira-bot generate MP-1 --context "Rust backend, PostgreSQL database"
 
 # Use a specific Claude model
 jira-bot generate MP-1 --model claude-opus-4-6
+
+# Start working on a ticket — transitions to In Progress, clones repo, creates branch
+jira-bot start MP-1
+
+# Start with a custom workspace directory
+jira-bot start MP-1 --workspace ~/projects
+
+# Watch for tickets moving to In Progress and auto-checkout
+jira-bot watch
+
+# Watch with custom polling interval and JQL filter
+jira-bot watch --interval 60 --jql "project = MP AND assignee = currentUser() AND status = 'In Progress'"
 ```
+
+### Linking a repo to a ticket
+
+Add a Jira label in the format `repo:owner/repo-name` to your ticket. For example:
+
+- `repo:bradleypaul/my-app`
+- `repo:bradleypaul/jira-bot`
+
+When you run `jira-bot start MP-1`, it will:
+1. Read the `repo:` label from the ticket
+2. Transition the ticket to "In Progress"
+3. Clone the repo (or pull if it already exists) into `~/jira-repos/`
+4. Create a feature branch named after the ticket (e.g. `mp-1`)
 
 Add `--json` to any command to get raw JSON output:
 
