@@ -1,11 +1,17 @@
 mod claude;
 mod client;
+mod repo;
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use claude::ClaudeClient;
-use client::{JiraClient, JiraConfig};
+use client::{repo_from_labels, JiraClient, JiraConfig};
 
 #[derive(Parser)]
 #[command(name = "jira-bot", about = "Read Jira ticket information from the command line")]
@@ -53,6 +59,26 @@ enum Commands {
         #[arg(short, long)]
         model: Option<String>,
     },
+    /// Transition a ticket to In Progress and check out the linked repository
+    Start {
+        /// Issue key, e.g. MP-1
+        issue_key: String,
+        /// Directory to clone repos into (default: ~/jira-repos)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Poll Jira for tickets moving to In Progress and auto-checkout repos
+    Watch {
+        /// JQL filter for which tickets to watch (default: your assigned tickets)
+        #[arg(short, long)]
+        jql: Option<String>,
+        /// Polling interval in seconds
+        #[arg(short, long, default_value_t = 30)]
+        interval: u64,
+        /// Directory to clone repos into (default: ~/jira-repos)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 fn build_client() -> Result<JiraClient> {
@@ -76,6 +102,49 @@ fn build_claude_client(model: Option<String>) -> Result<ClaudeClient> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .context("ANTHROPIC_API_KEY not set in environment or .env")?;
     Ok(ClaudeClient::new(api_key, model))
+}
+
+fn default_workspace() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("jira-repos")
+}
+
+fn handle_start(
+    client: &JiraClient,
+    issue_key: &str,
+    workspace: &PathBuf,
+) -> Result<()> {
+    eprintln!("Fetching ticket {issue_key}...");
+    let summary = client.get_issue_summary(issue_key)?;
+
+    let repo_slug = repo_from_labels(&summary.labels).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No repo: label found on {issue_key}. Add a label like 'repo:owner/repo-name'"
+        )
+    })?;
+
+    eprintln!(
+        "  Ticket:  {} — {}",
+        summary.key, summary.summary
+    );
+    eprintln!("  Repo:    {repo_slug}");
+
+    // Transition to In Progress
+    eprintln!("Transitioning to In Progress...");
+    match client.transition_to_in_progress(issue_key)? {
+        true => eprintln!("  Done — ticket is now In Progress"),
+        false => eprintln!("  Ticket is already In Progress"),
+    }
+
+    // Clone/pull and create branch
+    eprintln!("Setting up repository...");
+    let repo_path = repo::checkout_repo(&repo_slug, issue_key, workspace)?;
+
+    eprintln!();
+    eprintln!("Ready to work!");
+    eprintln!("  cd {}", repo_path.display());
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -205,6 +274,86 @@ fn main() -> Result<()> {
                 println!("{}", "=".repeat(60));
                 println!();
                 println!("{}", result.response);
+            }
+        }
+
+        Commands::Start {
+            issue_key,
+            workspace,
+        } => {
+            let workspace = workspace.unwrap_or_else(default_workspace);
+            handle_start(&client, &issue_key, &workspace)?;
+        }
+
+        Commands::Watch {
+            jql,
+            interval,
+            workspace,
+        } => {
+            let workspace = workspace.unwrap_or_else(default_workspace);
+            let jql = jql.unwrap_or_else(|| {
+                "assignee = currentUser() AND status = 'In Progress'".to_string()
+            });
+
+            eprintln!("Watching for In Progress tickets...");
+            eprintln!("  JQL:      {jql}");
+            eprintln!("  Interval: {interval}s");
+            eprintln!("  Workspace: {}", workspace.display());
+            eprintln!();
+
+            let mut seen: HashSet<String> = HashSet::new();
+
+            // Seed with already in-progress tickets so we don't re-trigger them
+            if let Ok(results) = client.search_issues(&jql, 50) {
+                if let Some(issues) = results["issues"].as_array() {
+                    for issue in issues {
+                        if let Some(key) = issue["key"].as_str() {
+                            seen.insert(key.to_string());
+                            eprintln!("  (already in progress: {key})");
+                        }
+                    }
+                }
+            }
+
+            loop {
+                thread::sleep(Duration::from_secs(interval));
+
+                let results = match client.search_issues(&jql, 50) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  Poll error: {e}");
+                        continue;
+                    }
+                };
+
+                let issues = match results["issues"].as_array() {
+                    Some(arr) => arr,
+                    None => continue,
+                };
+
+                for issue in issues {
+                    let key = match issue["key"].as_str() {
+                        Some(k) => k.to_string(),
+                        None => continue,
+                    };
+
+                    if seen.contains(&key) {
+                        continue;
+                    }
+
+                    seen.insert(key.clone());
+
+                    let summary = issue["fields"]["summary"]
+                        .as_str()
+                        .unwrap_or("(no summary)");
+                    eprintln!();
+                    eprintln!("New In Progress ticket: {key} — {summary}");
+
+                    match handle_start(&client, &key, &workspace) {
+                        Ok(()) => {}
+                        Err(e) => eprintln!("  Error handling {key}: {e}"),
+                    }
+                }
             }
         }
     }
