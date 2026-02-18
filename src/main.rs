@@ -1,8 +1,10 @@
+mod claude;
 mod client;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use claude::ClaudeClient;
 use client::{JiraClient, JiraConfig};
 
 #[derive(Parser)]
@@ -40,6 +42,17 @@ enum Commands {
     Projects,
     /// Show authenticated user info
     Whoami,
+    /// Fetch a ticket and send it to Claude to generate an implementation plan
+    Generate {
+        /// Issue key, e.g. PROJ-123
+        issue_key: String,
+        /// Additional context to include in the prompt (e.g. tech stack, repo info)
+        #[arg(short, long)]
+        context: Option<String>,
+        /// Claude model to use
+        #[arg(short, long)]
+        model: Option<String>,
+    },
 }
 
 fn build_client() -> Result<JiraClient> {
@@ -57,6 +70,12 @@ fn build_client() -> Result<JiraClient> {
         email,
         api_token,
     })
+}
+
+fn build_claude_client(model: Option<String>) -> Result<ClaudeClient> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .context("ANTHROPIC_API_KEY not set in environment or .env")?;
+    Ok(ClaudeClient::new(api_key, model))
 }
 
 fn main() -> Result<()> {
@@ -159,6 +178,33 @@ fn main() -> Result<()> {
                     me.display_name,
                     me.email_address.as_deref().unwrap_or("no email")
                 );
+            }
+        }
+
+        Commands::Generate {
+            issue_key,
+            context,
+            model,
+        } => {
+            let claude = build_claude_client(model)?;
+
+            eprintln!("Fetching ticket {issue_key} from Jira...");
+            let summary = client.get_issue_summary(&issue_key)?;
+            let comments = client.get_issue_comments(&issue_key)?;
+
+            eprintln!("Sending to Claude for analysis...");
+            let result =
+                claude.generate_from_ticket(&summary, &comments, context.as_deref())?;
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!();
+                println!("{}", "=".repeat(60));
+                println!("  Generated plan for {}", result.issue_key);
+                println!("{}", "=".repeat(60));
+                println!();
+                println!("{}", result.response);
             }
         }
     }
