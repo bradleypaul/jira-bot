@@ -1,16 +1,14 @@
 # jira-bot
 
-A Rust CLI tool for reading Jira ticket information via the Jira REST API.
+A Python CLI tool for reading Jira ticket information via the Jira REST API.
 
 ## Setup
 
-### 1. Build
+### 1. Install dependencies
 
 ```bash
-cargo build --release
+pip install -r requirements.txt
 ```
-
-The binary will be at `target/release/jira-bot`.
 
 ### 2. Configure credentials
 
@@ -32,55 +30,44 @@ Edit `.env` with your Jira details:
 
 ```bash
 # Test your credentials
-jira-bot whoami
+python -m jira_bot.cli whoami
 
 # Get details of a ticket
-jira-bot issue PROJ-123
+python -m jira_bot.cli issue PROJ-123
 
 # View comments on a ticket
-jira-bot comments PROJ-123
+python -m jira_bot.cli comments PROJ-123
 
 # Search with JQL
-jira-bot search "project = PROJ AND status = 'In Progress'"
+python -m jira_bot.cli search "project = PROJ AND status = 'In Progress'"
 
 # List all projects
-jira-bot projects
+python -m jira_bot.cli projects
 ```
 
 Add `--json` to any command to get raw JSON output:
 
 ```bash
-jira-bot --json issue PROJ-123
-```
-
-Or run directly with cargo:
-
-```bash
-cargo run -- issue PROJ-123
-cargo run -- --json search "assignee = currentUser()"
+python -m jira_bot.cli --json issue PROJ-123
 ```
 
 ## Using as a library
 
-```rust
-use jira_bot::client::{JiraClient, JiraConfig};
+```python
+from jira_bot.client import JiraClient
 
-let client = JiraClient::new(JiraConfig {
-    base_url: "https://your-domain.atlassian.net".into(),
-    email: "you@example.com".into(),
-    api_token: "your-token".into(),
-})?;
+client = JiraClient()
 
-// Get a formatted summary of an issue
-let summary = client.get_issue_summary("PROJ-123")?;
-println!("{:?}", summary);
+# Get a formatted summary of an issue
+summary = client.get_issue_summary("PROJ-123")
+print(summary)
 
-// Search with JQL
-let results = client.search_issues("assignee = currentUser()", 20)?;
+# Search with JQL
+results = client.search_issues("assignee = currentUser() ORDER BY updated DESC")
 
-// Get comments
-let comments = client.get_issue_comments("PROJ-123")?;
+# Get comments
+comments = client.get_issue_comments("PROJ-123")
 
-// List available transitions
-let transitions = client.get_issue_transitions("PROJ-123")?;
+# List available transitions
+transitions = client.get_issue_transitions("PROJ-123")
 ```
