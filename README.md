@@ -27,6 +27,7 @@ Edit `.env` with your Jira details:
 | `JIRA_BASE_URL`  | Your Jira instance URL, e.g. `https://your-domain.atlassian.net`            |
 | `JIRA_EMAIL`     | Email address of the Jira account                                           |
 | `JIRA_API_TOKEN` | API token — generate one at https://id.atlassian.com/manage-profile/security/api-tokens |
+| `ANTHROPIC_API_KEY` | Claude API key — required for the `generate` command |
 
 ## Usage
 
@@ -45,6 +46,15 @@ jira-bot search "project = PROJ AND status = 'In Progress'"
 
 # List all projects
 jira-bot projects
+
+# Generate an implementation plan from a ticket using Claude
+jira-bot generate MP-1
+
+# With additional context
+jira-bot generate MP-1 --context "Rust backend, PostgreSQL database"
+
+# Use a specific Claude model
+jira-bot generate MP-1 --model claude-opus-4-6
 ```
 
 Add `--json` to any command to get raw JSON output:
