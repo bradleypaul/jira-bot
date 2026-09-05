@@ -1,0 +1,18 @@
+[Unit]
+Description=jira-bot — start work when assigned Jira tickets move to In Progress
+Documentation=https://github.com/bradleypaul/jira-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User-level unit: runs as the account that enabled it.
+# Edit ExecStart if the venv lives somewhere else.
+EnvironmentFile=%h/.config/jira-bot/env
+ExecStart=%h/jira-bot/.venv/bin/jira-bot watch
+Restart=always
+RestartSec=15
+# stdout/stderr go to the journal: journalctl --user -u jira-bot -f
+
+[Install]
+WantedBy=default.target
