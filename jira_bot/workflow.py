@@ -11,10 +11,20 @@ from typing import Any, Callable
 
 from jira_bot.claude import ClaudeClient
 from jira_bot.client import JiraClient, JiraError, repo_from_labels
+from jira_bot.github import GitHubClient, GitHubError
+from jira_bot.pipeline import implement_ticket
 from jira_bot.repo import GitError, checkout_repo, default_workspace
 
 LogFn = Callable[[str], None]
-DEFAULT_WATCH_JQL = "assignee = currentUser() AND status = 'In Progress'"
+DEFAULT_BOT_LABEL = "bot"
+
+
+def watch_jql(label: str = DEFAULT_BOT_LABEL) -> str:
+    """Assigned In Progress tickets that opted in with the bot label."""
+    return f'assignee = currentUser() AND status = "In Progress" AND labels = "{label}"'
+
+
+DEFAULT_WATCH_JQL = watch_jql()
 logger = logging.getLogger(__name__)
 
 
@@ -142,20 +152,34 @@ def handle_issue(
     seen: set[str],
     state_file: Path,
     workspace: Path | str | None,
+    github: GitHubClient | None = None,
 ) -> bool:
-    """Start work on one ticket. Persist the key on success or a permanent error."""
+    """Run the pipeline on one ticket. Persist the key once it's handled.
+
+    Failures before the agent starts are retried on the next poll. After the
+    agent runs, the outcome is reported on the ticket and the key is kept, so
+    a paid run isn't repeated; `jira-bot run KEY` re-runs it by hand.
+    """
     key = str(issue.get("key") or "")
     summary = (issue.get("fields") or {}).get("summary", "")
-    logger.info("New In Progress ticket: %s — %s", key, summary)
+    logger.info("New ticket for jira-bot: %s — %s", key, summary)
     try:
-        start_ticket(client, key, workspace=workspace)
+        record = implement_ticket(
+            client,
+            key,
+            workspace=Path(workspace) if workspace else default_workspace(),
+            run_root=state_file.parent / "runs",
+            github=github,
+        )
     except JiraError as exc:
         logger.error("Error handling %s: %s", key, exc)
         if "No repo:" not in str(exc):
             return False
-    except GitError as exc:
-        logger.error("Git error handling %s: %s", key, exc)
+    except (GitError, GitHubError) as exc:
+        logger.error("Error handling %s: %s", key, exc)
         return False
+    else:
+        logger.info("%s finished: %s %s", key, record["status"], record.get("pr_url", ""))
 
     seen.add(key)
     save_seen(state_file, seen)
@@ -170,13 +194,16 @@ def run_watch(
     state_file: Path | None = None,
     once: bool = False,
     sleep: Callable[[float], None] = time.sleep,
+    github: GitHubClient | None = None,
 ) -> None:
-    """Poll Jira for assigned In Progress tickets and start work on new ones."""
+    """Poll Jira for opted-in tickets and run the pipeline on new ones."""
     path = state_file or default_state_path()
     workspace_dir = Path(workspace) if workspace else default_workspace()
+    # Fail at startup, not on the first ticket, if GitHub isn't configured.
+    github = github or GitHubClient()
     seen = prepare_seen(client, jql, path)
 
-    logger.info("Watching for assigned In Progress tickets")
+    logger.info("Watching for opted-in In Progress tickets")
     logger.info("  JQL:       %s", jql)
     logger.info("  Interval:  %ss", interval)
     logger.info("  Workspace: %s", workspace_dir)
@@ -191,7 +218,7 @@ def run_watch(
             logger.error("Poll error: %s", exc)
         else:
             for issue in issues:
-                handle_issue(client, issue, seen, path, workspace_dir)
+                handle_issue(client, issue, seen, path, workspace_dir, github)
 
         if once:
             return

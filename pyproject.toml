@@ -5,18 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jira-bot"
 version = "0.2.0"
-description = "Jira Cloud REST API client for reading tickets, planning, and starting work"
+description = "Takes a Jira ticket through a sandboxed coding agent to a tested draft pull request"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Paul Bradley" }]
 dependencies = [
+  "anthropic>=1.14.0",
   "requests>=2.31.0",
   "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# Installed in the agent container image, not on the host.
+agent = ["claude-agent-sdk>=0.2.167"]
+dev = ["pytest>=8.0", "claude-agent-sdk>=0.2.167"]
 
 [project.scripts]
 jira-bot = "jira_bot.cli:main"

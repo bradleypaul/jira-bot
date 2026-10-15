@@ -16,6 +16,7 @@ from jira_bot.workflow import (
     seed_seen_keys,
     start_ticket,
     unmatched_issues,
+    watch_jql,
 )
 
 
@@ -120,7 +121,7 @@ def test_handle_issue_retries_git_errors(
 ) -> None:
     client = MagicMock()
     monkeypatch.setattr(
-        "jira_bot.workflow.start_ticket",
+        "jira_bot.workflow.implement_ticket",
         MagicMock(side_effect=GitError("clone failed")),
     )
     seen: set[str] = set()
@@ -142,7 +143,7 @@ def test_handle_issue_records_missing_repo_label(
 ) -> None:
     client = MagicMock()
     monkeypatch.setattr(
-        "jira_bot.workflow.start_ticket",
+        "jira_bot.workflow.implement_ticket",
         MagicMock(side_effect=JiraError(400, "No repo: label found on PROJ-9")),
     )
     seen: set[str] = set()
@@ -166,10 +167,12 @@ def test_run_watch_once_starts_unseen_ticket(
         "issues": [{"key": "PROJ-4", "fields": {"summary": "New work"}}]
     }
     started: list[str] = []
-    monkeypatch.setattr(
-        "jira_bot.workflow.start_ticket",
-        lambda client, key, workspace=None, log=None: started.append(key),
-    )
+
+    def fake_implement(client, key, **kwargs):
+        started.append(key)
+        return {"key": key, "status": "implemented", "pr_url": "https://github.com/acme/app/pull/1"}
+
+    monkeypatch.setattr("jira_bot.workflow.implement_ticket", fake_implement)
     state = tmp_path / "seen.json"
     state.write_text('{"keys": []}\n')
     run_watch(
@@ -180,6 +183,29 @@ def test_run_watch_once_starts_unseen_ticket(
         state_file=state,
         once=True,
         sleep=lambda _seconds: None,
+        github=MagicMock(),
     )
     assert started == ["PROJ-4"]
     assert json.loads(state.read_text())["keys"] == ["PROJ-4"]
+
+
+def test_handle_issue_keeps_key_after_agent_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished run is recorded even when it failed, so it isn't paid for twice."""
+    monkeypatch.setattr(
+        "jira_bot.workflow.implement_ticket",
+        MagicMock(return_value={"key": "PROJ-5", "status": "error", "run_dir": "x"}),
+    )
+    seen: set[str] = set()
+    state = tmp_path / "seen.json"
+    ok = handle_issue(
+        MagicMock(), {"key": "PROJ-5", "fields": {"summary": "Fix"}}, seen, state, tmp_path
+    )
+    assert ok is True
+    assert json.loads(state.read_text())["keys"] == ["PROJ-5"]
+
+
+def test_watch_jql_requires_bot_label() -> None:
+    assert 'labels = "bot"' in watch_jql()
+    assert 'labels = "ai"' in watch_jql("ai")

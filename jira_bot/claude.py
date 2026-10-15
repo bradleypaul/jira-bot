@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import requests
+import anthropic
 from dotenv import load_dotenv
+
+from jira_bot.ticket import format_ticket
 
 load_dotenv()
 
-API_URL = "https://api.anthropic.com/v1/messages"
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "claude-opus-5-5"
 SYSTEM_PROMPT = (
     "You are a senior software engineer. Given a Jira ticket, analyze the "
     "requirements and produce a clear, actionable implementation plan with "
@@ -26,13 +27,16 @@ class ClaudeError(RuntimeError):
 
 
 class ClaudeClient:
-    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
-        if not self.api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY must be set for the generate command."
-            )
-        self.model = model or DEFAULT_MODEL
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        client: anthropic.Anthropic | None = None,
+    ) -> None:
+        # With no key, the SDK resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+        # or an `ant auth login` profile.
+        self.client = client or anthropic.Anthropic(api_key=api_key)
+        self.model = model or os.getenv("JIRA_BOT_MODEL") or DEFAULT_MODEL
 
     def generate_from_ticket(
         self,
@@ -41,33 +45,35 @@ class ClaudeClient:
         extra_context: str | None = None,
     ) -> dict[str, str]:
         prompt = _build_prompt(issue, comments, extra_context)
-        response = self._send_message(SYSTEM_PROMPT, prompt)
-        return {"issue_key": str(issue.get("key") or ""), "response": response}
-
-    def _send_message(self, system: str, user_message: str) -> str:
-        response = requests.post(
-            API_URL,
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "max_tokens": 4096,
-                "system": system,
-                "messages": [{"role": "user", "content": user_message}],
-            },
-            timeout=120,
-        )
-        if not response.ok:
+        try:
+            with self.client.beta.messages.stream(
+                model=self.model,
+                max_tokens=32000,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={"effort": "high"},
+                # If a safety classifier declines, retry server-side on the
+                # model Anthropic recommends for that refusal category.
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+            ) as stream:
+                message = stream.get_final_message()
+        except anthropic.APIStatusError as exc:
+            raise ClaudeError(f"Claude API {exc.status_code}: {exc.message}") from exc
+        except anthropic.APIConnectionError as exc:
+            raise ClaudeError(f"Could not reach the Claude API: {exc}") from exc
+        except TypeError as exc:
+            # The SDK raises TypeError when it finds no credentials at all.
             raise ClaudeError(
-                f"Claude API {response.status_code}: {response.text}"
-            )
-        blocks = response.json().get("content", [])
-        return "\n".join(
-            block.get("text", "") for block in blocks if block.get("text")
+                f"No Anthropic credentials. Set ANTHROPIC_API_KEY. ({exc})"
+            ) from exc
+
+        if message.stop_reason == "refusal":
+            raise ClaudeError(f"Claude declined to plan {issue.get('key')}")
+        response = "\n".join(
+            block.text for block in message.content if block.type == "text"
         )
+        return {"issue_key": str(issue.get("key") or ""), "response": response}
 
 
 def _build_prompt(
@@ -75,24 +81,7 @@ def _build_prompt(
     comments: list[dict[str, Any]],
     extra_context: str | None,
 ) -> str:
-    lines = [
-        f"## Jira Ticket: {issue.get('key')}",
-        f"**Summary:** {issue.get('summary')}",
-        f"**Type:** {issue.get('type')}",
-        f"**Status:** {issue.get('status')}",
-        f"**Priority:** {issue.get('priority')}",
-    ]
-    if issue.get("description"):
-        lines.extend(["", f"**Description:**\n{issue['description']}"])
-    if issue.get("labels"):
-        lines.append(f"**Labels:** {', '.join(issue['labels'])}")
-    if comments:
-        lines.append("\n**Comments:**")
-        for comment in comments:
-            lines.append(
-                f"- {comment.get('author')} ({comment.get('created')}): "
-                f"{comment.get('body')}"
-            )
+    lines = [format_ticket(issue, comments)]
     if extra_context:
         lines.extend(["", f"**Additional context:**\n{extra_context}"])
     lines.append(

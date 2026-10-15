@@ -168,6 +168,32 @@ class JiraClient:
         self.transition_issue(issue_key, match["id"])
         return True
 
+    def transition_by_name(self, issue_key: str, needle: str) -> str | None:
+        """Apply the first transition whose name contains `needle`.
+
+        Returns the transition name, or None if no transition matched.
+        """
+        for transition in self.get_issue_transitions(issue_key):
+            if needle.lower() in transition["name"].lower():
+                self.transition_issue(issue_key, transition["id"])
+                return transition["name"]
+        return None
+
+    def add_comment(self, issue_key: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Post a comment. `body` is an ADF document (see jira_bot.adf)."""
+        return self._post(f"issue/{issue_key}/comment", {"body": body})
+
+    def add_remote_link(self, issue_key: str, url: str, title: str) -> None:
+        """Attach a link, such as a pull request, to the issue.
+
+        Jira updates the link with the same globalId instead of adding a
+        duplicate, so re-runs don't stack links.
+        """
+        self._post(
+            f"issue/{issue_key}/remotelink",
+            {"globalId": url, "object": {"url": url, "title": title}},
+        )
+
     def get_projects(self) -> list[dict[str, Any]]:
         """List all projects visible to the authenticated user."""
         return self._get("project")
