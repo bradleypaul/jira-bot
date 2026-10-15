@@ -12,13 +12,17 @@ from pathlib import Path
 from jira_bot import __version__
 from jira_bot.claude import ClaudeError
 from jira_bot.client import JiraClient, JiraError
-from jira_bot.repo import GitError
+from jira_bot.github import GitHubError
+from jira_bot.pipeline import implement_ticket
+from jira_bot.repo import GitError, default_workspace
+from jira_bot.sandbox import SandboxError
 from jira_bot.workflow import (
-    DEFAULT_WATCH_JQL,
+    DEFAULT_BOT_LABEL,
     default_state_path,
     generate_plan,
     run_watch,
     start_ticket,
+    watch_jql,
 )
 
 
@@ -126,23 +130,47 @@ def cmd_start(args: argparse.Namespace, client: JiraClient) -> None:
     start_ticket(client, args.issue_key, workspace=workspace, log=print)
 
 
+def cmd_run(args: argparse.Namespace, client: JiraClient) -> None:
+    _setup_service_logging()
+    workspace = args.workspace or os.getenv("JIRA_WORKSPACE")
+    record = implement_ticket(
+        client,
+        args.issue_key,
+        workspace=Path(workspace) if workspace else default_workspace(),
+        run_root=_state_file(args).parent / "runs",
+    )
+    if args.json:
+        print(json.dumps(record, indent=2))
+        return
+    print(f"{record['key']}: {record['status']}")
+    if record.get("pr_url"):
+        print(f"  Pull request: {record['pr_url']}")
+    if record.get("error"):
+        print(f"  Error: {record['error']}")
+    print(f"  Logs: {record['run_dir']}")
+
+
 def cmd_watch(args: argparse.Namespace, client: JiraClient) -> None:
     _setup_service_logging()
     workspace = args.workspace or os.getenv("JIRA_WORKSPACE")
-    jql = args.jql or os.getenv("JIRA_WATCH_JQL") or DEFAULT_WATCH_JQL
+    label = os.getenv("JIRA_BOT_LABEL") or DEFAULT_BOT_LABEL
+    jql = args.jql or os.getenv("JIRA_WATCH_JQL") or watch_jql(label)
     interval = args.interval
     if interval is None:
         interval = _env_int("JIRA_WATCH_INTERVAL", 30)
-    state = args.state_file or os.getenv("JIRA_STATE_FILE")
-    state_file = Path(state) if state else default_state_path()
     run_watch(
         client,
         jql=jql,
         interval=interval,
         workspace=Path(workspace) if workspace else None,
-        state_file=state_file,
+        state_file=_state_file(args),
         once=args.once,
     )
+
+
+def _state_file(args: argparse.Namespace) -> Path:
+    state = getattr(args, "state_file", None) or os.getenv("JIRA_STATE_FILE")
+    return Path(state) if state else default_state_path()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -221,9 +249,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument("-w", "--workspace", help="Directory to clone into")
     p_start.set_defaults(func=cmd_start)
 
+    p_run = subparsers.add_parser(
+        "run",
+        help="Implement a ticket with the agent and open a draft pull request",
+    )
+    p_run.add_argument("issue_key")
+    p_run.add_argument("-w", "--workspace", help="Directory to clone into")
+    p_run.add_argument(
+        "--state-file",
+        help="State file; agent logs go in a runs/ directory beside it",
+    )
+    p_run.set_defaults(func=cmd_run)
+
     p_watch = subparsers.add_parser(
         "watch",
-        help="Poll Jira and start work when assigned tickets move to In Progress",
+        help="Poll Jira and run the agent on opted-in In Progress tickets",
     )
     p_watch.add_argument("-j", "--jql", help="JQL filter")
     p_watch.add_argument(
@@ -263,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)
         return 0
-    except (JiraError, ClaudeError, GitError, ValueError) as exc:
+    except (JiraError, ClaudeError, GitError, GitHubError, SandboxError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0

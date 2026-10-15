@@ -55,6 +55,42 @@ def github_clone_url(repo_slug: str) -> str:
     return f"https://github.com/{repo_slug}.git"
 
 
+def default_branch(repo_path: Path) -> str:
+    """Return the remote's default branch, e.g. 'main'."""
+    ref = _git(repo_path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    return ref.removeprefix("origin/")
+
+
+def has_changes(repo_path: Path) -> bool:
+    return bool(_git(repo_path, ["status", "--porcelain"]))
+
+
+def commit_all(repo_path: Path, message: str) -> str:
+    """Stage everything and commit. Returns the new commit sha.
+
+    JIRA_BOT_GIT_NAME and JIRA_BOT_GIT_EMAIL override the committer, which
+    helps when the service account has no git identity configured.
+    """
+    identity: list[str] = []
+    if name := os.getenv("JIRA_BOT_GIT_NAME"):
+        identity += ["-c", f"user.name={name}"]
+    if email := os.getenv("JIRA_BOT_GIT_EMAIL"):
+        identity += ["-c", f"user.email={email}"]
+    _git(repo_path, ["add", "--all"])
+    _git(repo_path, [*identity, "commit", "--file", "-"], stdin=message)
+    return _git(repo_path, ["rev-parse", "HEAD"])
+
+
+def discard_changes(repo_path: Path) -> None:
+    """Drop uncommitted edits and untracked files (ignored files are kept)."""
+    _git(repo_path, ["reset", "--hard", "HEAD"])
+    _git(repo_path, ["clean", "-fd"])
+
+
+def push_branch(repo_path: Path, branch_name: str) -> None:
+    _git(repo_path, ["push", "--set-upstream", "origin", branch_name])
+
+
 def _branch_exists(repo_path: Path, branch_name: str) -> bool:
     result = subprocess.run(
         ["git", "rev-parse", "--verify", branch_name],
@@ -65,10 +101,11 @@ def _branch_exists(repo_path: Path, branch_name: str) -> bool:
     return result.returncode == 0
 
 
-def _git(cwd: Path, args: list[str]) -> str:
+def _git(cwd: Path, args: list[str], stdin: str | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,
