@@ -1,5 +1,5 @@
 [Unit]
-Description=jira-bot — start work when assigned Jira tickets move to In Progress
+Description=jira-bot — turn opted-in Jira tickets into draft pull requests
 Documentation=https://github.com/bradleypaul/jira-bot
 After=network-online.target
 Wants=network-online.target

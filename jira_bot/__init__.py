@@ -1,4 +1,4 @@
-"""Jira Cloud REST API client and workflows.
+"""Take Jira tickets to tested draft pull requests with a sandboxed coding agent.
 
 Talks to `/rest/api/3` with an email + API token. Does not use the Atlassian
 CLI (`acli`) or the Jira CLI marketplace app, which site admins often disable.
